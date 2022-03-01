@@ -7,7 +7,7 @@ open import Data.Vec using (Vec; _∷_; lookup; _[_]≔_)
 open import Data.Fin using (Fin)
 open import Data.Nat using (ℕ; zero; suc)
 
-
+open import BitVector
 
 -- two transition systems (S₁, Actions, ⟶₁), (S₂, Actions, ⟶₂)
 -- a relation R ⊂ S₁ × S₂ is a "weak simulation" (observation congruence) iff ∀(p, q) ∈ R
@@ -18,33 +18,22 @@ open import Data.Nat using (ℕ; zero; suc)
 -- R ≡ ≈
 -- s ≈ (s' , cache) ⇔ s ≡ s'
 
-
-
-
-
 private
   variable
     n m : ℕ
 
-
-postulate
-  --Memory : ℕ → Set
-  Register : ℕ → Set
-  --Address : Set
-  
-  --RegName : Set
-
-Address : ℕ → Set
-Address n = Fin n
-
 MemVal : Set
 MemVal = ℕ
 
-RegFile : ℕ → Set
-RegFile n = Vec MemVal n
 
-RegName : ℕ → Set
-RegName n = Fin n
+
+
+
+
+
+
+Address : ℕ → Set
+Address n = Fin n
 
 -- A contiguous array of memory values
 -- lookup is by "offset" (index of element)
@@ -55,28 +44,95 @@ Memory n = Vec MemVal n
 memlookup : Memory n → Address n → MemVal
 memlookup = lookup
 
+
+
+
+
+
+
+
+RegName : ℕ → Set
+RegName n = Fin n
+
+RegFile : ℕ → Set
+RegFile n = Vec MemVal n
+
 reglookup : RegFile n → RegName n → MemVal
 reglookup = lookup
 
 
 
+
+
+
 State : ℕ → ℕ → Set
-State n m = Memory n × Register m
-
-
-
-
-data ValidAddr : Address → Set where
-
-data ValidName : RegName → Set where
+State n m = Memory n × RegFile m
     
+-- Semantics for memory
 data _⟶₁_ : State n m → State n m → Set where
 
-  load : ∀ {addr : Address} {regname : RegName} {mem : Memory n} {reg : Register m}
-    → ValidAddr addr
-    → ValidName regname
+  load : ∀ {mem : Memory n} {addr : Address n} {reg : RegFile m} {regname : RegName m}
       -----------------
     → (mem , reg) ⟶₁ (mem , reg [ regname ]≔ memlookup mem addr)
 
-  
--- data _⟶₂_ : State n m × Cache → State n m × Cache → Set where
+
+
+
+
+record CacheLine (width : ℕ) : Set where
+  field
+    valid : Bool
+    tag : Bin -- or maybe ℕ
+    row : Vec MemVal width
+
+-- Cache is a vector of vectors, with length-number of CacheLines each
+-- containing width-number of memory values.
+Cache : ℕ → ℕ → Set
+Cache length width = Vec (CacheLine width) length
+
+private
+  variable
+    l w : ℕ
+
+-- Semantics for direct-mapped cache
+data _⟶₂_ : State n m × Cache l w → State n m × Cache l w → Set where
+
+  -- get an address and a regname
+  --
+  -- (ABOVE IS ALSO IN MEMORY MODEL; BELOW IS ONLY IN CACHE)
+  -- 
+  -- break addr into tag|index|offset
+  --
+  -- log2n is width of addr in binary
+  -- log2l is width of index in binary
+  -- log2w is width of offset in binary
+  -- log2n - log2l - log2w is width of tag in binary
+  --
+  -- hit or miss?
+  --
+  -- lookup the line for the index
+  -- check whether the valid bit is set
+  -- compare the tag in the line to the given tag
+  -- valid bit set and same tag?
+  -- hit: jump down to the hit case below
+  -- miss: continue 
+  --
+  -- miss case:
+  -- 
+  -- set up cache line
+  --    starting from (tag|index|00000)
+  --    copy width MemVals
+  --    store them into the CacheLine row field
+  --    set the valid bit on the CacheLine
+  --    set the tag on the CacheLine
+  -- cache [ index ]≔ new_cache_line
+  --    (if we cared about stores, we'd need to writeback the evicted data here)
+  -- continue to hit case below
+  -- 
+  -- hit case:
+  --
+  -- val = lookup (row cacheline) offset
+  -- 
+  -- (ABOVE IS ONLY IN CACHE; BELOW IS ALSO IN MEMORY MODEL)
+  -- 
+  -- reg [ regname ]≔ val
