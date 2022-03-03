@@ -6,6 +6,8 @@ open import Data.List using (List)
 open import Data.Vec using (Vec; _∷_; lookup; _[_]≔_)
 open import Data.Fin using (Fin)
 open import Data.Nat using (ℕ; zero; suc)
+open import Data.Maybe using (Maybe; just; nothing)
+open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 
 open import BitVector
 
@@ -71,18 +73,22 @@ State n m = Memory n × RegFile m
 -- Semantics for memory
 data _⟶₁_ : State n m → State n m → Set where
 
-  load : ∀ {mem : Memory n} {addr : Address n} {reg : RegFile m} {regname : RegName m}
+  load : ∀ {mem : Memory n} {addr : Address n}
+           {reg : RegFile m} {regname : RegName m}
+           {val : MemVal}
+    → memlookup mem addr ≡ val
       -----------------
-    → (mem , reg) ⟶₁ (mem , reg [ regname ]≔ memlookup mem addr)
+    → (mem , reg) ⟶₁ (mem , reg [ regname ]≔ val)
 
 
 
 
 
 record CacheLine (width : ℕ) : Set where
+  constructor CL
   field
     valid : Bool
-    tag : Bin -- or maybe ℕ
+    tag : ℕ
     row : Vec MemVal width
 
 -- Cache is a vector of vectors, with length-number of CacheLines each
@@ -94,8 +100,43 @@ private
   variable
     l w : ℕ
 
+    tag : ℕ
+    index : Fin l
+    offset : Fin w
+
+postulate
+  cachelookup : Cache l w → ℕ × Fin l × Fin w → Maybe MemVal
+  -- Nathan: next let's prove that storing a thing in the cache means
+  -- that we can look it up
+  cachenamer : Address n → ℕ × Fin l × Fin w
+  catbits : ℕ → Fin l → Address n
+  fetchrow : Address n → ℕ → Vec MemVal w
+
 -- Semantics for direct-mapped cache
 data _⟶₂_ : State n m × Cache l w → State n m × Cache l w → Set where
+
+  -- When a value is in the cache, a hit occurs and writes to the regfile.
+  hit : ∀ {mem : Memory n} {addr : Address n}
+          {reg : RegFile m} {regname : RegName m}
+          {cache : Cache l w}
+          {val : MemVal}
+    → cachenamer addr ≡ (tag , index , offset)
+    → cachelookup cache (tag , index , offset) ≡ just val
+      ---------------------------------------------------
+    → ((mem , reg) , cache) ⟶₂ ((mem , reg [ regname ]≔ val) , cache)
+
+  -- When a value is not in the cache, a miss occurs and writes to the
+  -- cache. It can be followed by a hit.
+  miss : ∀ {mem : Memory n} {addr : Address n}
+           {reg : RegFile m}
+           {cache : Cache l w}
+           {tag++index : Address n} -- Must be a multiple of w
+    → cachenamer addr ≡ (tag , index , offset)
+    → cachelookup cache (tag , index , offset) ≡ nothing
+    → catbits tag index ≡ tag++index
+      ------------------------------
+    → ((mem , reg) , cache) ⟶₂
+      ((mem , reg) , cache [ index ]≔ CL true tag (fetchrow tag++index w))
 
   -- get an address and a regname
   --
