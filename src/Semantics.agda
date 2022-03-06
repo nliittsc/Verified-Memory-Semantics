@@ -1,12 +1,13 @@
 module Semantics where
 
+import Data.Vec as Vec
 open import Data.Bool
 open import Data.Product
 open import Data.List using (List)
-open import Data.Vec using (Vec; _∷_; lookup; _[_]≔_)
-open import Data.Fin using (Fin)
-open import Data.Nat using (ℕ; zero; suc)
-open import Data.Maybe using (Maybe; just; nothing)
+open import Data.Vec using (Vec; tabulate; lookup; _[_]≔_)
+open import Data.Fin using (Fin; _+_)
+open import Data.Nat using (ℕ; zero; suc; _∸_; _≡ᵇ_)
+open import Data.Maybe using (Maybe; just; nothing; boolToMaybe)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 
 open import BitVector
@@ -104,13 +105,22 @@ private
     index : Fin l
     offset : Fin w
 
+cachelookup : Cache l w → ℕ × Fin l × Fin w → Maybe MemVal
+cachelookup cache (tag , index , offset)
+  with lookup cache index
+... | (CL valid tag' row)
+  with valid ∧ (tag ≡ᵇ tag')
+... | true = just (lookup row offset)
+... | false = nothing
+
+fetchrow : Memory n → Address (n ∸ w) → Vec MemVal w
+fetchrow mem addr = tabulate (λ i → memlookup mem ({!addr!} + {!i!}))
+
 postulate
-  cachelookup : Cache l w → ℕ × Fin l × Fin w → Maybe MemVal
   -- Nathan: next let's prove that storing a thing in the cache means
   -- that we can look it up
   cachenamer : Address n → ℕ × Fin l × Fin w
   catbits : ℕ → Fin l → Address n
-  fetchrow : Address n → ℕ → Vec MemVal w
 
 -- Semantics for direct-mapped cache
 data _⟶₂_ : State n m × Cache l w → State n m × Cache l w → Set where
@@ -136,7 +146,7 @@ data _⟶₂_ : State n m × Cache l w → State n m × Cache l w → Set where
     → catbits tag index ≡ tag++index
       ------------------------------
     → ((mem , reg) , cache) ⟶₂
-      ((mem , reg) , cache [ index ]≔ CL true tag (fetchrow tag++index w))
+      ((mem , reg) , cache [ index ]≔ CL true tag (fetchrow mem tag++index))
 
   -- get an address and a regname
   --
