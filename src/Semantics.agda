@@ -48,45 +48,6 @@ module BitWidth where
 
 open BitWidth
 
-module BitVector where
-  data Bit : Set where
-    i : Bit
-    o : Bit
-  -- empty (bitvec of zeros of inferred width)
-  -- something to break a bitvec into pieces with
-  -- something to squish them back together with
-  -- function to measure the length of a bitvec
-  -- conversions between bitvecs and nats
-  BitVector : BitWidth → Set
-  BitVector (BW w) = Vec Bit w
-
-  private
-    variable
-      w : BitWidth
-
-
-  empty : BitVector w
-  empty {BW w} = Vec.replicate o
-
-  
-  inc : BitVector w → BitVector w
-  inc  = {!!}
-
-  toBV : ℕ → BitVector w
-  toBV zero = empty
-  toBV (suc n) = inc (toBV n)
-
-  fromBV : BitVector w → ℕ
-  fromBV x = {!Vec.foldr ? ? ?!}
-
-
-  -- Unit Tests --
-  test₁ : (toBV {BW 4} zero) ≡ o ∷ o ∷ o ∷ o ∷ []
-  test₁ = refl
-
-  test₂ : inc (toBV {BW 4} zero) ≡ o ∷ o ∷ o ∷ i ∷ []
-  test₂ = {!!}
-
 Word : Set
 Word = ℕ
 
@@ -179,7 +140,6 @@ module DirectlyMappedCacheMemoryAccess
         → cache [ index ]= CL true tag row
         → row [ offset ]= val
         → cache [ tag ﹐ index ﹐ offset ]= val
-
 
   RegName : Set
   RegName = DMA.RegFile'.RegName
