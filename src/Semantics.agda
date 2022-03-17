@@ -75,8 +75,8 @@ module RegFile {regCount : ℕ} where
   regAccess = Vec.lookup
 
 module DirectMemoryAccess {addrWidth regCount} where
-  open module Memory' = Memory {addrWidth}
-  open module RegFile' = RegFile {regCount}
+  open module Memory' = Memory {addrWidth}  public
+  open module RegFile' = RegFile {regCount} public
 
   State : Set
   State = Memory × RegFile
@@ -103,19 +103,18 @@ module DirectlyMappedCacheMemoryAccess
        where
   open module DMA = DirectMemoryAccess {BW addrWidthℕ} {regCount}
 
-  tagWidthℕ : ℕ
   tagWidthℕ = addrWidthℕ Nat.∸ (indexWidthℕ Nat.+ offsetWidthℕ)
+  rowAddrWidthℕ = tagWidthℕ Nat.+ indexWidthℕ
 
-  Tag : Set
-  Tag = FinBitWidth (BW tagWidthℕ)
+  tagWidth = BW tagWidthℕ
+  indexWidth = BW indexWidthℕ
+  offsetWidth = BW offsetWidthℕ
+  rowAddressWidth = BW rowAddrWidthℕ
 
-  Index : Set
-  Index = FinBitWidth (BW indexWidthℕ)
-
-  Offset : Set
-  Offset = FinBitWidth (BW offsetWidthℕ)
-
-  -- also define Tag|Index (fetchrow arg)
+  Tag = FinBitWidth tagWidth
+  Index = FinBitWidth indexWidth
+  Offset = FinBitWidth offsetWidth
+  RowAddress = FinBitWidth rowAddressWidth
 
   cacheLineCount : ℕ
   cacheLineCount = bitWidthRange (BW indexWidthℕ)
@@ -123,12 +122,14 @@ module DirectlyMappedCacheMemoryAccess
   cacheRowSlotCount : ℕ
   cacheRowSlotCount = bitWidthRange (BW offsetWidthℕ)
 
+  Row = Vec Word cacheRowSlotCount
+
   record CacheLine : Set where
     constructor CL
     field
       valid : Bool
       tag : Tag
-      row : Vec Word cacheRowSlotCount
+      row : Row
       -- λ offset → Word
 
   Cache : Set
@@ -141,36 +142,50 @@ module DirectlyMappedCacheMemoryAccess
         → row [ offset ]= val
         → cache [ tag ﹐ index ﹐ offset ]= val
 
-  RegName : Set
-  RegName = DMA.RegFile'.RegName
+  -- The 'signature' is an abstract set of functions
+  -- that yield an abstract implementation of the algorithm
+  -- which does the cache and address manipulation
+  record Signature : Set where
+    field
+      bitify' : Address → Tag × Index × Offset
+      catbits' : Tag → Index → RowAddress
+      fetch' : Memory → RowAddress → Row
 
-  Address : Set
-  Address = DMA.Memory'.Address
+  open Signature
 
-  Memory : Set
-  Memory = DMA.Memory'.Memory
+  -- think of fetching a row as a window into memory
+  -- dropping all the values in memory up to the rowAddr
+  -- from there, taking (bitWidthRange offsetWidth) values
+  -- with that view, it's easier to see how offset points at the same value as mem[addr]=
 
-  RegFile : Set
-  RegFile = DMA.RegFile'.RegFile
+  data lookupinator : Address → Tag × Index × Offset → RowAddress → Memory → Row → Set where
+    lookupinated :
+      ∀ {addr : Address} {tag : Tag} {index : Index} {offset : Offset} →
+      --     tag ≡ addr / bitWidthRange offsetWidth / bitWidthRange indexWidth % bitWidthRange tagWidth
+      --   index ≡ addr / bitWidthRange offsetWidth                            % bitWidthRange indexWidth
+      --  offset ≡ addr                                                        % bitWidthRange offsetWidth
+      ∀ {rowAddr : RowAddress} →
+      -- rowAddr ≡ addr / bitWidthRange offsetWidth                            % bitWidthRange (tagWidth + indexWidth)
+      ∀ {mem : Memory} {row : Row} →
+      -- row [ offset ]= val →
+      lookupinator addr (tag , index , offset) rowAddr mem row
 
-  rowAddrWidthℕ = tagWidthℕ Nat.+ indexWidthℕ
-  RowAddress = FinBitWidth (BW rowAddrWidthℕ)
+  data bitify : Address → Tag × Index × Offset → Set where
+    bitified : ∀ {addr : Address} {tag : Tag} {index : Index} {offset : Offset}
+      --    tag ≡ addr / bitWidthRange offsetWidth / bitWidthRange indexWidth % bitWidthRange tagWidth
+      --  index ≡ addr / bitWidthRange offsetWidth                            % bitWidthRange indexWidth
+      -- offset ≡ addr                                                        % bitWidthRange offsetWidth
+      → bitify addr (tag , index , offset)
 
-  -- The type of total functions from Addresses to Tag,Index,Offset
-  AddressBitifier : Set
-  AddressBitifier = Address → Tag × Index × Offset
+  data catbits : Tag × Index → RowAddress → Set where
+    cattedbits : ∀ {tag : Tag} {index : Index} {rowAddr : RowAddress}
+      -- ...
+      → catbits (tag , index) rowAddr
 
-  -- The type of total fucntions which concatenate the tag and index
-  -- to an address
-  Squasher : Set
-  Squasher = Tag → Index → RowAddress
-
-  -- The type of total functions which yield data from memory
-  Fetcher : Set
-  Fetcher = Memory → RowAddress → Vec Word cacheRowSlotCount
-
-  -- Function that 
-
+  data fetch : Memory → RowAddress → Row → Set where
+    fetched : ∀ {mem : Memory} {rowAddr : RowAddress} {row : Row}
+      -- ...
+      → fetch mem rowAddr row
 
   -- We can use a state machine approach for ⟶₂
   -- A configuration is a combination of the mutable memory and registers
@@ -182,17 +197,6 @@ module DirectlyMappedCacheMemoryAccess
     Access : Process
     Allocate : Process
     Write : Word → Process
-
-  -- The 'signature' is an abstract set of functions
-  -- that yield an abstract implementation of the algorithm
-  -- which does the cache and address manipulation
-  record Signature : Set where
-    field
-      bitify : AddressBitifier
-      fetch : Fetcher
-      catbits : Squasher
-
-  open Signature
       
   
   Config : Set
@@ -219,7 +223,7 @@ module DirectlyMappedCacheMemoryAccess
 
     -- If a hit, proceed to attemp to write the value to a register
     hit-rule : ∀ {val}
-      → bitify Σ₀ addr ≡ (tag , index , offset)
+      → bitify' Σ₀ addr ≡ (tag , index , offset)
       → σ [ tag ﹐ index ﹐ offset ]= val
       → (Access , 𝑚 , 𝑟 , σ) ⟶₂[ τ reg-name addr , Σ₀ ] (Write val , 𝑚 , 𝑟 , σ)
 
@@ -236,9 +240,9 @@ module DirectlyMappedCacheMemoryAccess
     -- comparing tags. The idea _now_ we can provide a proof of a cache hit and
     -- successfully move on to the write stage
     allocate-rule : ∀{row addr' line}
-      → bitify Σ₀ addr ≡ (tag , index , offset)
-      → catbits Σ₀ tag index ≡ addr'
-      → fetch Σ₀ 𝑚 addr' ≡ row
+      → bitify' Σ₀ addr ≡ (tag , index , offset)
+      → catbits' Σ₀ tag index ≡ addr'
+      → fetch' Σ₀ 𝑚 addr' ≡ row
       → CL true tag row ≡ line
       → σ [ index ]≔ line ≡ σ'
       → (Allocate , 𝑚 , 𝑟 , σ) ⟶₂[ τ reg-name addr , Σ₀ ] (Access , 𝑚 , 𝑟 , σ')
@@ -250,7 +254,7 @@ module DirectlyMappedCacheMemoryAccess
   data ⟨_﹐_⟩⇓Hit : Cache → Address → Set where
 
     hittable : ∀{tag' row} (σ : Cache) (addr : Address) (Σ₀ : Signature)
-      → bitify Σ₀ addr ≡ (tag , index , offset)
+      → bitify' Σ₀ addr ≡ (tag , index , offset)
       → σ [ index ]= CL true tag' row
       → tag ≡ tag'
       → ⟨ σ ﹐ addr ⟩⇓Hit
