@@ -1,20 +1,24 @@
 module Semantics where
 
-open import Data.Bool
+open import Data.Bool using (Bool; true; false)
 open import Data.Product
-open import Relation.Binary.PropositionalEquality using (_≡_; refl; sym; trans; cong; subst)
+open import Relation.Binary.PropositionalEquality using (_≡_; refl; sym; trans; cong; subst; _≢_)
 open import Data.Maybe using (Maybe; nothing; just)
 open import Function using (case_of_)
+--open import Function.Bijection
 
+open import Agda.Builtin.Nat
 import Data.Nat as Nat
-open import Data.Nat using (ℕ; zero; suc)
+open import Data.Nat using (ℕ; zero; suc; _+_)
 
 import Data.Fin as Fin
-open import Data.Fin using (Fin)
+open import Data.Fin using (Fin; toℕ; fromℕ<; _<_)
 
 import Data.Vec as Vec
-open import Data.Vec using (Vec; []; _∷_; _[_]=_; _[_]≔_)
+open import Data.Vec using (Vec; []; _∷_; _[_]=_; _[_]≔_; take; drop)
 open import Data.Vec.Properties
+
+open import Level
 
 --- --- ---
 
@@ -142,14 +146,31 @@ module DirectlyMappedCacheMemoryAccess
         → row [ offset ]= val
         → cache [ tag ﹐ index ﹐ offset ]= val
 
+
+  -- This function does a memory lookup with "more steps"
+  lookup-with : (Address → Tag × Index × Offset) →
+                (Memory → Tag → Index → Row) →
+                Memory → Address → Word
+  lookup-with 𝒇 𝒈 mem addr =
+    let (tag , index , offset) = 𝒇 addr
+        row = 𝒈 mem tag index
+    in  Vec.lookup row offset
+
   -- The 'signature' is an abstract set of functions
   -- that yield an abstract implementation of the algorithm
   -- which does the cache and address manipulation
   record Signature : Set where
     field
-      bitify' : Address → Tag × Index × Offset
-      catbits' : Tag → Index → RowAddress
-      fetch' : Memory → RowAddress → Row
+      toBitVec : Address → Tag × Index × Offset
+      fetchRow : Memory → Tag → Index → Row
+      lemma₁ : ∀{mem : Memory} {addr : Address} {val : Word} →
+                    mem [ addr ]= val →
+                    let (tag , index , offset) = toBitVec addr
+                        row = fetchRow mem tag index
+                    in  row [ offset ]= val
+
+      lemma₂ : ∀{mem : Memory} →
+               (∀(addr : Address) → Vec.lookup mem addr ≡ lookup-with toBitVec fetchRow mem addr) 
 
   open Signature
 
@@ -222,60 +243,53 @@ module DirectlyMappedCacheMemoryAccess
     req-rule :  (Idle , 𝑚 , 𝑟 , σ) ⟶₂[ Load reg-name addr , Σ₀ ] (Access , 𝑚 , 𝑟 , σ)
 
     -- If a hit, proceed to attemp to write the value to a register
-    hit-rule : ∀ {val}
-      → bitify' Σ₀ addr ≡ (tag , index , offset)
-      → σ [ tag ﹐ index ﹐ offset ]= val
-      → (Access , 𝑚 , 𝑟 , σ) ⟶₂[ τ reg-name addr , Σ₀ ] (Write val , 𝑚 , 𝑟 , σ)
+    hit-rule : ∀ {val} →
+               let (tag , index , offset) = toBitVec Σ₀ addr
+               in σ [ tag ﹐ index ﹐ offset ]= val →
+                  (Access , 𝑚 , 𝑟 , σ) ⟶₂[ τ reg-name addr , Σ₀ ] (Write val , 𝑚 , 𝑟 , σ)
 
     -- Write the value to the target register, then return to waiting for next request
-    write-rule : ∀{val target-register}
-      → 𝑟 [ target-register ]≔ val ≡ 𝑟'
-      → (Write val , 𝑚 , 𝑟 , σ) ⟶₂[ τ reg-name addr , Σ₀ ] (Idle , 𝑚 , 𝑟' , σ)
+    write-rule : let (tag , index , offset) = toBitVec Σ₀ addr
+                     row = fetchRow Σ₀ 𝑚 tag index
+                     val = Vec.lookup row offset
+                     𝑟' = 𝑟 [ reg-name ]≔ val
+                 in (Write val , 𝑚 , 𝑟 , σ) ⟶₂[ τ reg-name addr , Σ₀ ] (Idle , 𝑚 , 𝑟' , σ)
 
     -- We can't provide a proof of a cache hit, therefore we can only apply this reduction
-    miss-rule :
-      (Access , 𝑚 , 𝑟 , σ) ⟶₂[ τ reg-name addr , Σ₀ ] (Allocate , 𝑚 , 𝑟 , σ)
+    miss-rule : (Access , 𝑚 , 𝑟 , σ) ⟶₂[ τ reg-name addr , Σ₀ ] (Allocate , 𝑚 , 𝑟 , σ)
 
     -- We allocate a new line in the cache (thus updating it), then go back to
     -- comparing tags. The idea _now_ we can provide a proof of a cache hit and
     -- successfully move on to the write stage
-    allocate-rule : ∀{row addr' line}
-      → bitify' Σ₀ addr ≡ (tag , index , offset)
-      → catbits' Σ₀ tag index ≡ addr'
-      → fetch' Σ₀ 𝑚 addr' ≡ row
-      → CL true tag row ≡ line
-      → σ [ index ]≔ line ≡ σ'
-      → (Allocate , 𝑚 , 𝑟 , σ) ⟶₂[ τ reg-name addr , Σ₀ ] (Access , 𝑚 , 𝑟 , σ')
+    allocate-rule : let (tag , index , offset) = toBitVec Σ₀ addr
+                        row = fetchRow Σ₀ 𝑚 tag index
+                        line = CL true tag row
+                        σ' = σ [ index ]≔ line
+                    in (Allocate , 𝑚 , 𝑟 , σ) ⟶₂[ τ reg-name addr , Σ₀ ] (Access , 𝑚 , 𝑟 , σ')
+                     
+  
 
+  -- Note : This lemma is similar to injectivity. It says that lookups directly in
+  -- memory give the same value as the "lookup-with" some functions that do the
+  -- splitting of the address into tag-index-offset then retreive the relevant row.
+  equiv-lookups : ∀{val} (mem : Memory) Σ₀ addr →
+           mem [ addr ]= val →
+           let val' = lookup-with (toBitVec Σ₀) (fetchRow Σ₀) mem addr
+           in mem [ addr ]= val'
+  equiv-lookups mem Σ₀ addr mem[addr]=val = lookup⇒[]= addr mem (lemma₂ Σ₀ addr)
 
-  -- This constructor represents a cache hit for a given address
-  -- To construct it is to provide both the existence of
-  -- the cache, address, signature, and a proof that we had a hit
-  data ⟨_﹐_⟩⇓Hit : Cache → Address → Set where
-
-    hittable : ∀{tag' row} (σ : Cache) (addr : Address) (Σ₀ : Signature)
-      → bitify' Σ₀ addr ≡ (tag , index , offset)
-      → σ [ index ]= CL true tag' row
-      → tag ≡ tag'
-      → ⟨ σ ﹐ addr ⟩⇓Hit
-
-
-  -- This lemma asserts that if we apply the miss-rule and allocate-rules
-  -- in succession, then we can construct a proof of a cache hit for
-  -- the appropriate line
-  Lemma : ∀ {reg-name} addr σ' Σ₀
-    → (Access , 𝑚 , 𝑟 , σ) ⟶₂[ τ reg-name addr , Σ₀ ] (Allocate , 𝑚 , 𝑟 , σ)
-    → (Allocate , 𝑚 , 𝑟 , σ) ⟶₂[ τ reg-name addr , Σ₀ ] (Access , 𝑚 , 𝑟 , σ')
-    → ⟨ σ' ﹐ addr ⟩⇓Hit
-  Lemma addr σ' Σ₀ miss-rule
-        (allocate-rule {tag = tag} {index} {offset} {row = row} {line = line}
-        bitify-≡ f₁ f₂ ≡-newline σ[index]≔line≡σ') =
-          let fact₀ : σ' [ index ]= line
-              fact₀ = subst (λ s → s [ index ]= line) σ[index]≔line≡σ' ([]≔-updates _ index)
-
-              fact₁ : σ' [ index ]= CL true tag row
-              fact₁ = subst (λ l → σ' [ index ]= l) (sym (≡-newline)) fact₀
-
-              proof : ⟨ σ' ﹐ addr ⟩⇓Hit
-              proof = hittable σ' addr Σ₀ bitify-≡ fact₁ refl
-          in proof
+  -- Allocation gives a hit
+  Lemma : ∀{reg-name val} addr 𝑚 Σ₀ σ σ' →
+          𝑚 [ addr ]= val →
+          (Allocate , 𝑚 , 𝑟 , σ) ⟶₂[ τ reg-name addr , Σ₀ ] (Access , 𝑚 , 𝑟 , σ') →
+          let (tag , index , offset) = toBitVec Σ₀ addr
+              row = fetchRow Σ₀ 𝑚 tag index
+              val = Vec.lookup row offset
+          in σ' [ tag ﹐ index ﹐ offset ]= val
+  Lemma addr 𝑚 Σ₀ σ .(σ [ _ ]≔ CL true _ _) mem[addr]=val allocate-rule =
+    let (tag , index , offset) = toBitVec Σ₀ addr
+        row = fetchRow Σ₀ 𝑚 tag index
+        val = Vec.lookup row offset
+    in  cacheAccess (σ [ _ ]≔ CL true _ _) tag index offset
+                    ([]≔-updates _ index)
+                    (lemma₁ Σ₀ (equiv-lookups 𝑚 Σ₀ addr mem[addr]=val))
